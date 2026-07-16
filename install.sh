@@ -5,9 +5,9 @@
 # ==============================================================================
 
 # ⚠️ ВПИШИТЕ СЮДА ВАШИ ДАННЫЕ GITHUB, ЧТОБЫ СКРИПТ ЗНАЛ ОТКУДА СКАЧИВАТЬ:
-GITHUB_USER="ВАШ_НИК_НА_GITHUB"
-REPO_NAME="keenetic-l2tp-monitor"
-BRANCH="master" # или main, смотря как названа ветка в гитхабе
+GITHUB_USER="asinelnikov78"
+REPO_NAME="free-turn-keenetic-scripts"
+BRANCH="main" # или main, смотря как названа ветка в гитхабе
 
 BASE_URL="https://githubusercontent.com{GITHUB_USER}/${REPO_NAME}/${BRANCH}"
 
