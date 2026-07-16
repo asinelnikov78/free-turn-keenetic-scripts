@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # ==============================================================================
-# Интерактивный установщик комплекса мониторинга из отдельных файлов GitHub
+# Модульный интерактивный установщик комплекса мониторинга из GitHub
 # ==============================================================================
 
 # ⚠️ ВПИШИТЕ СЮДА ВАШИ ДАННЫЕ GITHUB, ЧТОБЫ СКРИПТ ЗНАЛ ОТКУДА СКАЧИВАТЬ:
@@ -20,7 +20,6 @@ DEFAULT_PORT="17112"
 printf "🌐 Введите порт для веб-панели [по умолчанию %s]: " "$DEFAULT_PORT"
 read -r USER_PORT
 
-# Если пользователь просто нажал Enter, оставляем порт по умолчанию
 if [ -z "$USER_PORT" ]; then
     WEB_PORT="$DEFAULT_PORT"
 else
@@ -50,11 +49,9 @@ echo ""
 echo "⚙️ Шаг 3: Конфигурация веб-сервера lighttpd..."
 LIGHT_CONF="/opt/etc/lighttpd/lighttpd.conf"
 if [ -f "$LIGHT_CONF" ]; then
-    # Очищаем от ограничений прав пользователя nobody
     sed -i '/server.username/d' "$LIGHT_CONF"
     sed -i '/server.groupname/d' "$LIGHT_CONF"
     
-    # Меняем порт веб-сервера lighttpd на выбранный пользователем
     if grep -q "server.port" "$LIGHT_CONF"; then
         sed -i "s/server.port.*/server.port = $WEB_PORT/" "$LIGHT_CONF"
     else
@@ -77,13 +74,18 @@ else
 fi
 echo ""
 
-# Шаг 5: Скачивание веб-панели из отдельного файла на GitHub
-echo "🖥️ Шаг 5: Скачивание скрипта веб-панели index.cgi..."
+# Шаг 5: Скачивание веб-файлов панели (index.html и index.cgi) из GitHub
+echo "🖥️ Шаг 5: Скачивание index.html и index.cgi из репозитория..."
+# Скачиваем вашу панель управления в папку cgi-bin
 curl -sL "${BASE_URL}/index.cgi" -o /opt/share/www/cgi-bin/index.cgi
-if [ $? -eq 0 ] && [ -s /opt/share/www/cgi-bin/index.cgi ]; then
-    echo "✅ Веб-панель успешно скачана."
+
+# Скачиваем ваш файл редиректа в корень веб-сервера
+curl -sL "${BASE_URL}/index.html" -o /opt/share/www/index.html
+
+if [ -s /opt/share/www/cgi-bin/index.cgi ] && [ -s /opt/share/www/index.html ]; then
+    echo "✅ Все веб-файлы панели (html + cgi) успешно скачаны и разложены."
 else
-    echo "❌ Ошибка скачивания index.cgi! Проверьте имя файла в репозитории."
+    echo "❌ Ошибка скачивания веб-компонентов! Проверьте файлы в репозитории."
     exit 1
 fi
 echo ""
@@ -92,6 +94,7 @@ echo ""
 echo "🔒 Шаг 6: Финальная обработка файлов и выставление прав..."
 sed -i 's/\r$//' /opt/etc/init.d/S99l2tp-monitor
 sed -i 's/\r$//' /opt/share/www/cgi-bin/index.cgi
+sed -i 's/\r$//' /opt/share/www/index.html
 
 chmod +x /opt/etc/init.d/S99l2tp-monitor
 chmod +x /opt/share/www/cgi-bin/index.cgi
