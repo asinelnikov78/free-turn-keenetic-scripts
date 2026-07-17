@@ -1,0 +1,250 @@
+#!/bin/sh
+
+# ==============================================================================
+# S99vk-turn-panel - Сбор всей телеметрии и флагов WebRTC в кэш статусов (Финал)
+# ==============================================================================
+
+ENABLED=yes
+PROCS=vk-turn-panel
+DESC="VK TURN PANEL Automation Daemon"
+PATH=/opt/sbin:/opt/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+JSON_CONF="/opt/etc/vk-turn/vk_turn_settings.json"
+
+get_cfg() {
+    awk -F'"' '/"'$1'"/ {print $4}' "$JSON_CONF" | head -n 1
+}
+
+VK_SCRIPT=$(get_cfg "vk_script")
+LOG_FILE=$(get_cfg "log_file")
+PIDFILE=$(get_cfg "pid_file")
+WEB_STATUS_FILE=$(get_cfg "web_status_file")
+NEED_INFO_FILE=$(get_cfg "need_info_file")
+CHECK_INTERVAL=$(get_cfg "check_interval")
+
+L2TP_SYS_NAME=$(get_cfg "l2tp_name")
+WG_IFACE=$(get_cfg "wireguard_name")
+MODEM_IFACE=$(get_cfg "modem_name")
+
+[ -z "$CHECK_INTERVAL" ] && CHECK_INTERVAL=5
+[ -z "$PIDFILE" ] && PIDFILE="/var/run/vk-turn-panel.pid"
+[ -z "$LOG_FILE" ] && LOG_FILE="/opt/etc/vk-turn/logs/vk-turn-panel.log"
+# ИСПРАВЛЕНО: Кэш пишется сразу внутрь песочницы cgi-bin папки веб-сервера
+[ -z "$WEB_STATUS_FILE" ] && WEB_STATUS_FILE="/opt/share/www/cgi-bin/mon_web_status.txt"
+[ -z "$NEED_INFO_FILE" ] && NEED_INFO_FILE="/opt/var/need_info.txt"
+[ -z "$L2TP_SYS_NAME" ] && L2TP_SYS_NAME="L2tp0"
+[ -z "$WG_IFACE" ] && WG_IFACE="Wireguard0"
+[ -z "$MODEM_IFACE" ] && MODEM_IFACE="UsbLte0"
+
+mkdir -p $(dirname "$LOG_FILE") 2>/dev/null
+
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
+}
+
+check_l2tp() {
+    STATUS=$(curl -s http://localhost:79/rci/show/interface/$L2TP_SYS_NAME | grep -A 5 '"summary":' | grep -o '"link": *"[^"]*"' | head -n 1 | cut -d'"' -f4)
+    [ "$STATUS" = "running" ] && return 0
+    return 1
+}
+
+is_vk_running() {
+    if [ -f "/opt/etc/vk-turn/run/vk-turn.pid" ]; then
+        pid=$(cat "/opt/etc/vk-turn/run/vk-turn.pid" 2>/dev/null)
+        [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && return 0
+    fi
+    return 1
+}
+
+is_wg_running() {
+    STATUS=$(curl -s http://localhost:79/rci/show/interface/$WG_IFACE | grep -o '"state": *"[^"]*"' | head -n 1 | cut -d'"' -f4)
+    [ "$STATUS" = "up" ] && return 0
+    return 1
+}
+
+start_wireguard() {
+    if is_wg_running; then return 0; fi
+    log "🔐 Запуск WireGuard ($WG_IFACE)..."
+    /opt/sbin/ndmq -p "interface $WG_IFACE up" > /dev/null 2>&1
+    sleep 2
+}
+
+stop_wireguard() {
+    if ! is_wg_running; then return 0; fi
+    log "🔒 Остановка WireGuard ($WG_IFACE)..."
+    /opt/sbin/ndmq -p "interface $WG_IFACE down" > /dev/null 2>&1
+    sleep 1
+}
+
+save_web_status() {
+    WG_JSON=$(curl -s http://localhost:79/rci/show/interface/$WG_IFACE)
+    WG_LINK=$(echo "$WG_JSON" | grep -o '"link": *"[^"]*"' | head -n 1 | cut -d'"' -f4)
+    WG_CONN=$(echo "$WG_JSON" | grep -o '"connected": *"[^"]*"' | head -n 1 | cut -d'"' -f4)
+    WG_STATE=$(echo "$WG_JSON" | grep -o '"state": *"[^"]*"' | head -n 1 | cut -d'"' -f4)
+
+    [ -z "$WG_LINK" ] && WG_LINK="down"
+    [ -z "$WG_CONN" ] && WG_CONN="no"
+    [ -z "$WG_STATE" ] && WG_STATE="down"
+
+    if [ -f "$NEED_INFO_FILE" ] || [ ! -f "$WEB_STATUS_FILE" ]; then
+        SYS_JSON=$(curl -s http://localhost:79/rci/show/system)
+        SYS_CPULOAD=$(echo "$SYS_JSON" | grep -o '"cpuload": *[0-9]*' | head -n 1 | awk '{print $2}')
+        SYS_MEMTOTAL=$(echo "$SYS_JSON" | grep -o '"memtotal": *[0-9]*' | head -n 1 | awk '{print $2}')
+        SYS_MEMFREE=$(echo "$SYS_JSON" | grep -o '"memfree": *[0-9]*' | head -n 1 | awk '{print $2}')
+        SYS_UPTIME=$(echo "$SYS_JSON" | grep -o '"uptime": *[0-9]*' | head -n 1 | awk '{print $2}')
+        
+        RAW_VER=$(echo "$SYS_JSON" | grep -o '"version": *"[^"]*"' | head -n 1 | cut -d'"' -f4)
+        [ -z "$RAW_VER" ] && RAW_VER=$(cat /etc/firmware 2>/dev/null | head -n 1)
+        [ -z "$RAW_VER" ] && SYS_VERSION="5.x (KeeneticOS)" || SYS_VERSION="v$RAW_VER (KeeneticOS)"
+
+        if [ -n "$SYS_MEMTOTAL" ] && [ "$SYS_MEMTOTAL" -gt 0 ]; then
+            SYS_MEMUSED=$((100 - (SYS_MEMFREE * 100 / SYS_MEMTOTAL)))
+        else SYS_MEMUSED="0"; fi
+
+        if [ -n "$SYS_UPTIME" ] && [ "$SYS_UPTIME" -gt 0 ] 2>/dev/null; then
+            UT_D=$((SYS_UPTIME / 86400)); UT_H=$(((SYS_UPTIME % 86400) / 3600)); UT_M=$(((SYS_UPTIME % 3600) / 60))
+            [ "$UT_D" -gt 0 ] && SYS_UT_STR="${UT_D}д. ${UT_H}ч. ${UT_M}м." || SYS_UT_STR="${UT_H}:${UT_M}"
+        else
+            SYS_UT_STR=$(uptime | awk '{print $3}' | cut -d',' -f1)
+        fi
+        [ -z "$SYS_CPULOAD" ] && SYS_CPULOAD="0"
+
+        MDM_JSON=$(curl -s http://localhost:79/rci/show/interface/$MODEM_IFACE)
+        MDM_OPERATOR=$(echo "$MDM_JSON" | grep -o '"operator": *"[^"]*"' | head -n 1 | cut -d'"' -f4)
+        MDM_RSRP=$(echo "$MDM_JSON" | grep -o '"rsrp": *"[^"]*"' | head -n 1 | cut -d'"' -f4)
+        MDM_RSRQ=$(echo "$MDM_JSON" | grep -o '"rsrq": *"[^"]*"' | head -n 1 | cut -d'"' -f4)
+        MDM_IP=$(echo "$MDM_JSON" | grep -o '"address": *"[^"]*"' | head -n 1 | cut -d'"' -f4)
+
+        RAW_NET_CODE=$(echo "$MDM_JSON" | grep -o '"operator-raw": *"[^"]*"' | cut -d',' -f4 | tr -d '"\} ')
+        case "$RAW_NET_CODE" in
+            *7*) MDM_TYPE="4G (LTE)" ;;
+            *2*) MDM_TYPE="3G (UMTS)" ;;
+            *)   MDM_TYPE="4G (LTE)" ;;
+        esac
+
+        [ -z "$MDM_OPERATOR" ] && MDM_OPERATOR="Нет сети"
+        [ -z "$MDM_RSRP" ] && MDM_RSRP="—"
+        [ -z "$MDM_RSRQ" ] && MDM_RSRQ="—"
+        [ -z "$MDM_IP" ] && MDM_IP="—"
+        rm -f "$NEED_INFO_FILE" 2>/dev/null
+    fi
+
+    if [ -f "$LOG_FILE" ]; then
+        RAW_LOGS=$(tail -n 100 "$LOG_FILE" 2>/dev/null | awk '{line[NR]=$0} END {for (i=NR;i>0;i--) print line[i]}')
+    else
+        RAW_LOGS="Лог-файл автоматики еще не создан."
+    fi
+
+    V_LISTEN=$(get_cfg "listen")
+    V_PEER=$(get_cfg "peer")
+    V_STREAMS=$(get_cfg "streams")
+    V_BROWSER=$(get_cfg "browser")
+    V_PROFILE=$(get_cfg "obf_profile")
+    V_TIMING=$(get_cfg "obf_timing")
+    V_KEY=$(get_cfg "obf_key")
+    V_LINKS=$(get_cfg "links")
+
+    {
+        if check_l2tp; then echo "L2TP=\"up\""; else echo "L2TP=\"down\""; fi
+        if is_vk_running; then echo "VK=\"up\""; else echo "VK=\"down\""; fi
+        if [ "$WG_STATE" = "up" ]; then echo "WG=\"up\""; else echo "WG=\"down\""; fi
+        
+        echo "WG_L=\"$WG_LINK\""
+        echo "WG_C=\"$WG_CONN\""
+        echo "WG_S=\"$WG_STATE\""
+        
+        echo "SYS_CPU=\"$SYS_CPULOAD\""
+        echo "SYS_RAM=\"$SYS_MEMUSED\""
+        echo "SYS_VER=\"$SYS_VERSION\""
+        echo "SYS_UT=\"$SYS_UT_STR\""
+        
+        echo "MDM_OP=\"$MDM_OPERATOR\""
+        echo "MDM_TY=\"$MDM_TYPE\""
+        echo "MDM_SP=\"$MDM_RSRP\""
+        echo "MDM_SQ=\"$MDM_RSRQ\""
+        echo "MDM_IP=\"$MDM_IP\""
+        
+        echo "VK_BIN=\"$VK_SCRIPT\""
+        echo "VK_LISTEN=\"$V_LISTEN\""
+        echo "VK_PEER=\"$V_PEER\""
+        echo "VK_STREAMS=\"$V_STREAMS\""
+        echo "VK_BROWSER=\"$V_BROWSER\""
+        echo "VK_PROFILE=\"$V_PROFILE\""
+        echo "VK_TIMING=\"$V_TIMING\""
+        echo "VK_KEY=\"$V_KEY\""
+        echo "VK_LINKS=\"$V_LINKS\""
+        
+        # ДОБАВЛЕНО: Экспорт путей и интерфейсов для корректной работы GET-кнопок веб-панели
+        echo "PID_FILE=\"$PIDFILE\""
+        echo "L2TP_NAME=\"$L2TP_SYS_NAME\""
+        echo "WG_NAME=\"$WG_IFACE\""
+    } > "$WEB_STATUS_FILE"
+}
+
+monitor_cycle() {
+    log "=== ЗАПУСК МОНИТОРИНГА ==="
+    LAST_STATE=-1
+    while true; do
+        save_web_status
+        if check_l2tp; then
+            if [ "$LAST_STATE" -ne 1 ]; then log "🔄 L2TP поднялся. Отключаем резерв."; LAST_STATE=1; fi
+            stop_wireguard
+            if is_vk_running; then "$VK_SCRIPT" stop > /dev/null 2>&1; fi
+        else
+            if [ "$LAST_STATE" -ne 0 ]; then log "⚠️ L2TP упал. Включаем резерв."; LAST_STATE=0; fi
+            if ! is_vk_running; then "$VK_SCRIPT" start > /dev/null 2>&1; sleep 4; fi
+            if is_vk_running; then start_wireguard; fi
+        fi
+        sleep "$CHECK_INTERVAL"
+    done
+}
+
+start() {
+    if [ -f "$PIDFILE" ]; then
+        pid=$(cat "$PIDFILE" 2>/dev/null)
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then return 0; fi
+        rm -f "$PIDFILE"
+    fi
+    echo "🚀 Запуск службы vk-turn-panel..."
+    save_web_status
+    monitor_cycle &
+    echo $! > "$PIDFILE"
+    return 0
+}
+
+stop() {
+    if [ -f "$PIDFILE" ]; then
+        pid=$(cat "$PIDFILE" 2>/dev/null)
+        [ -n "$pid" ] && kill "$pid" 2>/dev/null
+        rm -f "$PIDFILE"
+    fi
+    rm -f "$WEB_STATUS_FILE"
+    return 0
+}
+
+status() {
+    echo "========================================"
+    echo "    СТАТУС СЛУЖБЫ VK-TURN-PANEL"
+    echo "========================================"
+    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then 
+        echo "✅ МОНИТОР: ЗАПУЩЕН (PID: $(cat "$PIDFILE" 2>/dev/null))"
+    else 
+        echo "❌ МОНИТОР: НЕ ЗАПУЩЕН"
+    fi
+    
+    L2TP_CHECK=$(curl -s http://localhost:79/rci/show/interface/$L2TP_SYS_NAME | grep -A 5 '"summary":' | grep -o '"link": *"[^"]*"' | cut -d'"' -f4)
+    WG_CHECK=$(curl -s http://localhost:79/rci/show/interface/$WG_IFACE | grep -o '"state": *"[^"]*"' | cut -d'"' -f4)
+    
+    echo "📡 Туннель L2TP ($L2TP_SYS_NAME): $([ "$L2TP_CHECK" = "running" ] && echo "✅ ONLINE" || echo "❌ OFFLINE")"
+    echo "🔐 WireGuard ($WG_IFACE):  $([ "$WG_CHECK" = "up" ] && echo "✅ ПОДНЯТ" || echo "❌ ОТКЛЮЧЕН")"
+    echo "🔄 Сервис vk-turn:          $([ -f "/opt/etc/vk-turn/run/vk-turn.pid" ] && echo "✅ РАБОТАЕТ" || echo "❌ СПИТ")"
+    echo "========================================"
+}
+
+# ДОБАВЛЕНО: Системный переключатель аргументов вызова
+case "$1" in
+    start) start ;;
+    stop) stop ;;
+    restart) stop; sleep 1; start ;;
+    status) status ;;
+esac
