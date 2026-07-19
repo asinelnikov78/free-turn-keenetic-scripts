@@ -1,40 +1,11 @@
 #!/bin/sh
+echo "$(date) - QUERY_STRING=$QUERY_STRING" >> /tmp/debug.log
 printf "Content-type: text/html; charset=utf-8\r\n\r\n"
-
-# Принудительно фиксируем рабочую папку веб-сервера
 cd /opt/share/www/cgi-bin 2>/dev/null
 
-# Жесткие абсолютные пути, которые веб-сервер видит идеально
 WEB_STATUS_FILE="/opt/share/www/cgi-bin/mon_web_status.txt"
 TEMPLATE_FILE="/opt/share/www/cgi-bin/template.html"
 IF_LOG="/opt/share/www/cgi-bin/vk-turn-panel.log"
-MONITOR_SCRIPT="/opt/etc/init.d/S99vk-turn-panel"
-
-parse_post() {
-    echo "$1" | sed 's/+/ /g;s/%\([0-9A-F][0-9A-F]\)/\\x\1/g' | xargs -0 printf "%b" 2>/dev/null
-}
-
-# Обработка сохранения интерактивной формы POST (Передаем данные нашему root-скрипту)
-if [ "$REQUEST_METHOD" = "POST" ]; then
-    read -r POST_DATA
-    val_listen=$(echo "$POST_DATA" | grep -o 'listen=[^&]*' | cut -d= -f2)
-    val_peer=$(echo "$POST_DATA" | grep -o 'peer=[^&]*' | cut -d= -f2)
-    val_streams=$(echo "$POST_DATA" | grep -o 'streams=[^&]*' | cut -d= -f2)
-    val_browser=$(echo "$POST_DATA" | grep -o 'browser=[^&]*' | cut -d= -f2)
-    val_profile=$(echo "$POST_DATA" | grep -o 'obf_profile=[^&]*' | cut -d= -f2)
-    val_timing=$(echo "$POST_DATA" | grep -o 'obf_timing=[^&]*' | cut -d= -f2)
-    val_key=$(echo "$POST_DATA" | grep -o 'obf_key=[^&]*' | cut -d= -f2)
-    val_links=$(echo "$POST_DATA" | grep -o 'links=[^&]*' | cut -d= -f2)
-
-    L_LISTEN=$(parse_post "$val_listen"); L_PEER=$(parse_post "$val_peer")
-    L_STREAMS=$(parse_post "$val_streams"); L_BROWSER=$(parse_post "$val_browser")
-    L_PROFILE=$(parse_post "$val_profile"); L_TIMING=$(parse_post "$val_timing")
-    L_KEY=$(parse_post "$val_key"); L_LINKS=$(parse_post "$val_links")
-
-    $MONITOR_SCRIPT save_json "$L_LISTEN" "$L_PEER" "$L_STREAMS" "$L_BROWSER" "$L_PROFILE" "$L_TIMING" "$L_KEY" "$L_LINKS" >/dev/null 2>&1
-    echo "<meta http-equiv='refresh' content='0;url=index.cgi?tab=vkturn'>"
-    exit 0
-fi
 
 CURRENT_TAB="manage"
 case "$QUERY_STRING" in
@@ -42,20 +13,16 @@ case "$QUERY_STRING" in
     *tab=info*)   CURRENT_TAB="info" ;;
 esac
 
-# Стартовые значения переменных телеметрии по умолчанию
 L2TP_ST="down"; L2TP_TX="OFFLINE"; VK_ST="down"; VK_TX="СПИТ"; WG_ST="down"; WG_TX="ОТКЛЮЧЕН"
 WG_LINK="—"; WG_CONN="—"; WG_STATE="—"; SYS_CPU="0"; SYS_RAM="0"; SYS_VER="—"; SYS_UT="—"
-MDM_OP="—"; MDM_TY="—"; MDM_SP="—"; MDM_SQ="—"; MDM_IP="—"; WEB_LOGS="Ожидание данных..."
+MDM_OP="—"; MDM_TY="—"; MDM_SP="—"; MDM_SQ="—"; MDM_IP="—"
 VK_BIN="/opt/etc/vk-turn/vk-turn"; VK_LISTEN="—"; VK_PEER="—"; VK_STREAMS="—"; VK_BROWSER="—"; VK_PROFILE="—"; VK_TIMING="—"; VK_KEY="—"; VK_LINKS="—"
 
-# НАДЁЖНЫЙ ИМПОРТ КЭША ЧЕРЕЗ АБСОЛЮТНЫЙ ПУТЬ ТОЧКИ
 if [ -f "$WEB_STATUS_FILE" ]; then
     . "$WEB_STATUS_FILE"
-    
     [ "$L2TP" = "up" ] && { L2TP_ST="up"; L2TP_TX="ONLINE"; }
     [ "$VK" = "up" ]   && { VK_ST="up";   VK_TX="РАБОТАЕТ"; }
     [ "$WG" = "up" ]   && { WG_ST="up";   WG_TX="ПОДНЯТ"; }
-    
     [ -n "$WG_L" ] && WG_LINK="$WG_L"
     [ -n "$WG_C" ] && WG_CONN="$WG_C"
     [ -n "$WG_S" ] && WG_STATE="$WG_S"
@@ -63,13 +30,11 @@ if [ -f "$WEB_STATUS_FILE" ]; then
     [ -n "$SYS_RAM" ] && SYS_RAM="$SYS_RAM"
     [ -n "$SYS_VER" ] && SYS_VER="$SYS_VER"
     [ -n "$SYS_UT" ] && SYS_UT="$SYS_UT"
-    
     [ -n "$MDM_OP" ] && MDM_OP="$MDM_OP"
     [ -n "$MDM_TY" ] && MDM_TY="$MDM_TY"
     [ -n "$MDM_SP" ] && MDM_SP="$MDM_SP"
     [ -n "$MDM_SQ" ] && MDM_SQ="$MDM_SQ"
     [ -n "$MDM_IP" ] && MDM_IP="$MDM_IP"
-    
     [ -n "$VK_BIN" ] && VK_BIN="$VK_BIN"
     [ -n "$VK_LISTEN" ] && VK_LISTEN="$VK_LISTEN"
     [ -n "$VK_PEER" ] && VK_PEER="$VK_PEER"
@@ -79,26 +44,18 @@ if [ -f "$WEB_STATUS_FILE" ]; then
     [ -n "$VK_TIMING" ] && VK_TIMING="$VK_TIMING"
     [ -n "$VK_KEY" ] && VK_KEY="$VK_KEY"
     [ -n "$VK_LINKS" ] && VK_LINKS="$VK_LINKS"
-    
     PIDFILE="$PID_FILE"
     L2TP_SYS_NAME="$L2TP_NAME"
     WG_SYS_NAME="$WG_NAME"
 fi
 
-# ИСПРАВЛЕНО: ЧИСТЫЙ ПЕРЕВЕРНУТЫЙ СБОР С ОГРАНИЧЕНИЕМ СТРОК НА СТОРОНЕ ЯДРА (БЕЗ AWK/TAIL/SED)
 if [ -f "$IF_LOG" ]; then
     WEB_LOGS=""
     log_count=0
-    
-    # Используем чистый внутренний reverse-парсер из успешного ТЕСТА 6
     while IFS= read -r log_line || [ -n "$log_line" ]; do
         [ -z "$log_line" ] && continue
-        
-        # Накапливаем строки в обратном порядке (свежие записи летят наверх)
         WEB_LOGS="${log_line}
 ${WEB_LOGS}"
-
-        # Ограничитель: инкрементируем счетчик строк силами самого ядра sh
         log_count=$((log_count + 1))
         [ "$log_count" -ge 100 ] && break
     done < "$IF_LOG"
@@ -106,46 +63,115 @@ else
     WEB_LOGS="Лог-файл vk-turn-panel.log еще не создан автоматикой."
 fi
 
-# Системные страховки путей на случай самого первого старта автоматики
 [ -z "$PIDFILE" ] && PIDFILE="/var/run/vk-turn-panel.pid"
 [ -z "$L2TP_SYS_NAME" ] && L2TP_SYS_NAME="L2TP0"
 [ -z "$WG_SYS_NAME" ] && WG_SYS_NAME="Wireguard0"
 
-# Обработчик интерактивных кнопок действий пульта управления ( GET запросы )
-if echo "$QUERY_STRING" | grep -q "action="; then
-    case "$QUERY_STRING" in
-        *action=start*)   $MONITOR_SCRIPT start >/dev/null 2>&1 ;;
-        *action=stop*)    $MONITOR_SCRIPT stop >/dev/null 2>&1 ;;
-        *action=restart*) $MONITOR_SCRIPT restart >/dev/null 2>&1 ;;
-        *action=clearlog*) echo "$(date '+%Y-%m-%d %H:%M:%S') - Лог очищен" > "$IF_LOG" ;;
-        *action=reboot*)  /opt/sbin/ndmq -p "system reboot" >/dev/null 2>&1 ;;
-        *action=recon*)   /opt/sbin/ndmq -p "interface ${L2TP_SYS_NAME} down" >/dev/null 2>&1; sleep 1; /opt/sbin/ndmq -p "interface ${L2TP_SYS_NAME} up" >/dev/null 2>&1 ;;
-    esac
-    [ "$CURRENT_TAB" != "manage" ] && echo "<meta http-equiv='refresh' content='0;url=index.cgi?tab=${CURRENT_TAB}'>" || echo "<meta http-equiv='refresh' content='0;url=index.cgi'>"
-    exit 0
-fi
+case "$QUERY_STRING" in
+    *action=start*)
+        > /opt/share/www/cgi-bin/cmd_start
+        chmod 666 /opt/share/www/cgi-bin/cmd_start
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - 🟢 Команда START" >> "$IF_LOG"
+        echo "<meta http-equiv='refresh' content='0;url=index.cgi'>"
+        exit 0
+        ;;
+    *action=stop*)
+        > /opt/share/www/cgi-bin/cmd_stop
+        chmod 666 /opt/share/www/cgi-bin/cmd_stop
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - 🔴 Команда STOP" >> "$IF_LOG"
+        echo "<meta http-equiv='refresh' content='0;url=index.cgi'>"
+        exit 0
+        ;;
+	*action=save*)
+		#LISTEN=""
+		# PEER=""
+		# STREAMS=""
+		# BROWSER=""
+		# PROFILE=""
+		# TIMING=""
+		# KEY=""
+		# LINKS=""
 
-# Проверка активности фонового root демона по динамическому PID файлу из кэша статусов
-if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
-    MON_ST="up"; MON_TX="АКТИВЕН"; MON_REFRESH=1
+		# IFS='&'
+		# for PAIR in $QUERY_STRING; do
+			# case "$PAIR" in
+				# listen=*) LISTEN="${PAIR#listen=}" ;;
+				# peer=*) PEER="${PAIR#peer=}" ;;
+				# streams=*) STREAMS="${PAIR#streams=}" ;;
+				# browser=*) BROWSER="${PAIR#browser=}" ;;
+				# obf_profile=*) PROFILE="${PAIR#obf_profile=}" ;;
+				# obf_timing=*) TIMING="${PAIR#obf_timing=}" ;;
+# #				case "$TIMING" in
+# #					*ms) ;;
+# #					*) TIMING="${TIMING}ms" ;;
+# #				esac
+				# obf_key=*) KEY="${PAIR#obf_key=}" ;;
+				# links=*) LINKS="${PAIR#links=}" ;;
+			# esac
+		# done
+#		Q_STRING="ave&listen=127.0.0.19000&peer=wildkid.netcraze.pro"
+#		echo "DEBUG: SENDING to save_json: Q_STRING = $Q_STRING" >> /tmp/debug.log   
+#		echo "DEBUG: ACTION_STRING = $QUERY_STRING" >> /tmp/debug.log
+#		LISTEN=$(echo "$Q_STRING" | grep -o 'listen=[^&]*')
+#		LISTEN=$(echo "$QUERY_STRING" | grep -o 'listen=[^&]*' | cut -d= -f2 | head -1)
+#		PEER=$(echo "$QUERY_STRING" | grep -o 'peer=[^&]*' | cut -d= -f2 | head -1)
+#		STREAMS=$(echo "$QUERY_STRING" | grep -o 'streams=[^&]*' | cut -d= -f2 | head -1)
+#		BROWSER=$(echo "$QUERY_STRING" | grep -o 'browser=[^&]*' | cut -d= -f2 | head -1)
+#		PROFILE=$(echo "$QUERY_STRING" | grep -o 'obf_profile=[^&]*' | cut -d= -f2 | head -1)
+#		TIMING=$(echo "$QUERY_STRING" | grep -o 'obf_timing=[^&]*' | cut -d= -f2 | head -1)
+#		KEY=$(echo "$QUERY_STRING" | grep -o 'obf_key=[^&]*' | cut -d= -f2 | head -1)
+#		LINKS=$(echo "$QUERY_STRING" | grep -o 'links=[^&]*' | cut -d= -f2 | head -1)
+ #   echo "DEBUG: SENDING to save_json: LISTEN = $LISTEN" >> /tmp/debug.log   
+#	echo "DEBUG: SENDING to save_json: LISTEN = $LISTEN" >> /tmp/debug.log 
+	# echo "DEBUG: SENDING to save_json: LISTEN=$LISTEN PEER=$PEER STREAMS=$STREAMS BROWSER=$BROWSER PROFILE=$PROFILE TIMING=$TIMING KEY=$KEY LINKS=$LINKS" >> /tmp/debug.log
+		# /opt/etc/init.d/S99vk-turn-panel save_json "$LISTEN" "$PEER" "$STREAMS" "$BROWSER" "$PROFILE" "$TIMING" "$KEY" "$LINKS"
+#    echo "DEBUG: CALLING save_json with STREAMS=$STREAMS" >> /tmp/debug.log
+#		echo "DEBUG: STREAMS=$STREAMS" >> /tmp/debug.log
+#		echo "OK"
+        # Записываем QUERY_STRING в файл
+        echo "$QUERY_STRING" > /opt/share/www/cgi-bin/cmd_query
+        chmod 666 /opt/share/www/cgi-bin/cmd_query
+        
+        echo "<meta http-equiv='refresh' content='0;url=index.cgi?tab=vkturn&saved=1'>"
+
+		exit 0
+		;;
+esac
+
+MON_REFRESH=1
+if [ -f "$WEB_STATUS_FILE" ]; then
+    . "$WEB_STATUS_FILE"
+    if [ "$MONITOR_ENABLED" = "1" ]; then
+        MON_ST="up"; MON_TX="ВКЛЮЧЕН"
+    else
+        MON_ST="down"; MON_TX="ВЫКЛЮЧЕН"
+    fi
 else
-    MON_ST="down"; MON_TX="ВЫКЛЮЧЕН"; MON_REFRESH=0
+    MON_ST="down"; MON_TX="ВЫКЛЮЧЕН"
 fi
 
-META_REFRESH=""
-if [ "$MON_REFRESH" = "1" ] && [ "$CURRENT_TAB" != "vkturn" ]; then 
-    if [ "$CURRENT_TAB" != "manage" ]; then META_REFRESH="<meta http-equiv='refresh' content='5;url=index.cgi?tab=${CURRENT_TAB}'>"; else META_REFRESH="<meta http-equiv='refresh' content='5;url=index.cgi'>"; fi
-fi
-
-TAB_NAV="<a href='index.cgi' class='tab-link $( [ "$CURRENT_TAB" = "manage" ] && echo "active" )'>🎛️ УПРАВЛЕНИЕ</a> <a href='index.cgi?tab=vkturn' class='tab-link $( [ "$CURRENT_TAB" = "vkturn" ] && echo "active" )'>🔄 VK TURN</a> <a href='index.cgi?tab=info' class='tab-link $( [ "$CURRENT_TAB" = "info" ] && echo "active" )'>📊 ИНФОРМАЦИЯ</a>"
+TAB_NAV="<a href='index.cgi?tab=manage' class='tab-link $( [ "$CURRENT_TAB" = "manage" ] && echo "active" )'>🎛️ УПРАВЛЕНИЕ</a> <a href='index.cgi?tab=vkturn' class='tab-link $( [ "$CURRENT_TAB" = "vkturn" ] && echo "active" )'>🔄 VK TURN</a> <a href='index.cgi?tab=info' class='tab-link $( [ "$CURRENT_TAB" = "info" ] && echo "active" )'>📊 ИНФОРМАЦИЯ</a>"
 
 DISP_MAN="none"; DISP_VKT="none"; DISP_INF="none"
-[ "$CURRENT_TAB" = "manage" ] && DISP_MAN="block"; [ "$CURRENT_TAB" = "vkturn" ] && DISP_VKT="block"; [ "$CURRENT_TAB" = "info" ] && DISP_INF="block"
+[ "$CURRENT_TAB" = "manage" ] && DISP_MAN="block"
+[ "$CURRENT_TAB" = "vkturn" ] && DISP_VKT="block"
+[ "$CURRENT_TAB" = "info" ] && DISP_INF="block"
 
-# Сквозная подстановка динамических переменных в файл HTML-шаблона
 if [ -f "$TEMPLATE_FILE" ]; then
+    VK_PROFILE_NONE_SELECTED=""; VK_PROFILE_RTPOPUS_SELECTED=""; VK_PROFILE_RTPOPUS2_SELECTED=""; VK_PROFILE_RTPOPUS3_SELECTED=""
+    case "$VK_PROFILE" in
+        "none") VK_PROFILE_NONE_SELECTED="selected" ;;
+        "rtpopus") VK_PROFILE_RTPOPUS_SELECTED="selected" ;;
+        "rtpopus2") VK_PROFILE_RTPOPUS2_SELECTED="selected" ;;
+        "rtpopus3") VK_PROFILE_RTPOPUS3_SELECTED="selected" ;;
+    esac
+    VK_BROWSER_CHROME_SELECTED=""; VK_BROWSER_FIREFOX_SELECTED=""; VK_BROWSER_SAFARI_SELECTED=""
+    case "$VK_BROWSER" in
+        "chrome") VK_BROWSER_CHROME_SELECTED="selected" ;;
+        "firefox") VK_BROWSER_FIREFOX_SELECTED="selected" ;;
+        "safari") VK_BROWSER_SAFARI_SELECTED="selected" ;;
+    esac
     while IFS= read -r line || [ -n "$line" ]; do
-        line="${line//%META_REFRESH%/$META_REFRESH}"
         line="${line//%TAB_NAVIGATION%/$TAB_NAV}"
         line="${line//%CURRENT_TAB%/$CURRENT_TAB}"
         line="${line//%CSS_MANAGE%/$DISP_MAN}"
@@ -168,7 +194,6 @@ if [ -f "$TEMPLATE_FILE" ]; then
         line="${line//%VK_PROFILE%/$VK_PROFILE}"
         line="${line//%VK_TIMING%/$VK_TIMING}"
         line="${line//%VK_BROWSER%/$VK_BROWSER}"
-        line="${line//%VK_BIN%/$VK_BIN}"
         line="${line//%VK_KEY%/$VK_KEY}"
         line="${line//%VK_LINKS%/$VK_LINKS}"
         line="${line//%SYS_VER%/$SYS_VER}"
@@ -181,8 +206,15 @@ if [ -f "$TEMPLATE_FILE" ]; then
         line="${line//%MDM_SQ%/$MDM_SQ}"
         line="${line//%MDM_IP%/$MDM_IP}"
         line="${line//%WEB_LOGS%/$WEB_LOGS}"
+        line="${line//%VK_PROFILE_NONE_SELECTED%/$VK_PROFILE_NONE_SELECTED}"
+        line="${line//%VK_PROFILE_RTPOPUS_SELECTED%/$VK_PROFILE_RTPOPUS_SELECTED}"
+        line="${line//%VK_PROFILE_RTPOPUS2_SELECTED%/$VK_PROFILE_RTPOPUS2_SELECTED}"
+        line="${line//%VK_PROFILE_RTPOPUS3_SELECTED%/$VK_PROFILE_RTPOPUS3_SELECTED}"
+        line="${line//%VK_BROWSER_CHROME_SELECTED%/$VK_BROWSER_CHROME_SELECTED}"
+        line="${line//%VK_BROWSER_FIREFOX_SELECTED%/$VK_BROWSER_FIREFOX_SELECTED}"
+        line="${line//%VK_BROWSER_SAFARI_SELECTED%/$VK_BROWSER_SAFARI_SELECTED}"
         echo "$line"
     done < "$TEMPLATE_FILE"
 else
-    echo "⚠️ Ошибка: Файл HTML-шаблона template.html не найден по абсолютному пути $TEMPLATE_FILE!"
+    echo "⚠️ Ошибка: Файл HTML-шаблона template.html не найден!"
 fi
