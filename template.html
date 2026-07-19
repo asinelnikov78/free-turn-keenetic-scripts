@@ -1,123 +1,181 @@
-<!DOCTYPE html><html lang='ru'><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'>
-%META_REFRESH%
-<title>VK TURN PANEL</title><style>
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #121214; color: #e1e1e6; margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; }
-.container { width: 100%; max-width: 500px; background: #202024; padding: 25px; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.3); box-sizing: border-box; display: block; }
-h2 { margin-top: 0; text-align: center; color: #fff; font-weight: 600; border-bottom: 1px solid #323238; padding-bottom: 12px; margin-bottom: 15px; }
-.tabs { display: flex; border-bottom: 2px solid #29292e; margin-bottom: 20px; gap: 5px; width: 100%; box-sizing: border-box; }
-.tab-link { flex: 1; text-align: center; padding: 10px 5px; color: #a8a8b3; text-decoration: none; font-weight: bold; font-size: 13px; border-bottom: 2px solid transparent; margin-bottom: -2px; cursor: pointer; transition: 0.2s; white-space: nowrap; }
-.tab-link.active { color: #04d361; border-bottom-color: #04d361; }
-.status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 15px; width: 100%; box-sizing: border-box; }
-.status-card { background: #29292e; padding: 12px; border-radius: 8px; border: 1px solid #323238; display: flex; flex-direction: column; align-items: center; text-align: center; justify-content: center; min-height: 95px; box-sizing: border-box; }
-.status-title { font-size: 11px; color: #a8a8b3; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
-.badge { font-weight: bold; font-size: 13px; padding: 3px 10px; border-radius: 20px; }
-.badge.up { background: rgba(4,211,97,0.1); color: #04d361; }
-.badge.down { background: rgba(247,70,70,0.1); color: #f74646; }
-.wg-tech-info { font-family: monospace; font-size: 11px; color: #797985; margin-top: 8px; text-align: left; width: 100%; max-width: 120px; border-top: 1px solid #383842; padding-top: 4px; line-height: 1.3; }
-.wg-tech-info span { color: #cbe1e6; float: right; font-weight: bold; }
-.btn-group { display: flex; gap: 8px; margin-top: 15px; margin-bottom: 15px; width: 100%; box-sizing: border-box; }
-.btn { flex: 1; padding: 11px; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; transition: 0.2s; font-size: 13px; text-decoration: none; text-align: center; box-sizing: border-box; }
-.btn-start { background: #04d361; color: #000; }
-.btn-stop { background: #f74646; color: #fff; }
-.btn-blue { background: #4da6ff; color: #000; }
-.btn-grey { background: #4e4e54; color: #fff; }
-.log-header { display: flex; justify-content: space-between; align-items: center; margin-top: 20px; margin-bottom: 8px; width: 100%; box-sizing: border-box; }
-.log-title { font-size: 13px; color: #a8a8b3; font-weight: bold; text-transform: uppercase; }
-pre { background: #121214; padding: 12px; border-radius: 6px; border: 1px solid #323238; font-size: 11px; overflow-y: auto; overflow-x: hidden; white-space: pre-wrap; word-break: break-all; max-height: 180px; margin: 0; color: #8d8d99; font-family: monospace; box-sizing: border-box; width: 100%; }
-.info-block { background: #29292e; border: 1px solid #323238; border-radius: 8px; padding: 15px; margin-bottom: 15px; width: 100%; box-sizing: border-box; display: block; }
-.info-title { font-size: 14px; color: #fff; font-weight: bold; border-bottom: 1px solid #323238; padding-bottom: 6px; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
-.info-row { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 10px; color: #a8a8b3; align-items: center; width: 100%; box-sizing: border-box; }
-.info-row span { color: #fff; font-weight: bold; font-family: monospace; text-align: right; }
-.progress-bar { background: #121214; width: 100px; height: 12px; border-radius: 6px; overflow: hidden; display: inline-block; vertical-align: middle; margin-left: 10px; border: 1px solid #323238; }
-.progress-fill { background: #04d361; height: 100%; width: 0%; border-radius: 6px; }
+<!DOCTYPE html>
+<html lang='ru'>
+<head>
+    <meta charset='UTF-8'>
+    <meta name='viewport' content='width=device-width, initial-scale=1.0'>
+    %META_REFRESH%
+    <title>VK TURN PANEL</title>
+    <link rel="stylesheet" href="/cgi-bin/style.css">
+</head>
+<body>
+    <div class='container'>
+        <h2>⚡ VK TURN PANEL</h2>
+        <div class='tabs'>%TAB_NAVIGATION%</div>
 
-.info-row input[type="text"] { background: #121214; color: #fff; border: 1px solid #323238; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 12px; font-weight: bold; width: 60%; text-align: left; box-sizing: border-box; transition: 0.2s; }
-.info-row input[type="text"]:focus { border-color: #04d361; outline: none; background: #18181c; }
-.info-row textarea { background: #121214; color: #04d361; border: 1px solid #323238; padding: 8px; border-radius: 4px; font-family: monospace; font-size: 11px; width: 100%; min-height: 55px; resize: vertical; box-sizing: border-box; margin-top: 5px; line-height: 1.4; }
-.info-row textarea:focus { border-color: #04d361; outline: none; }
+        <!-- TAB 1: MANAGE -->
+        <div id='tab-manage' style='display: block;'>
+            <div class='status-grid'>
+                <div class='status-card'>
+                    <span class='status-title'>🔄 Монитор</span>
+                    <span class='badge %MON_ST%'>%MON_TX%</span>
+                </div>
+                <div class='status-card'>
+                    <span class='status-title'>📡 L2TP</span>
+                    <span class='badge %L2TP_ST%'>%L2TP_TX%</span>
+                </div>
+                <div class='status-card'>
+                    <span class='status-title'>🎭 VK-Turn</span>
+                    <span class='badge %VK_ST%'>%VK_TX%</span>
+                </div>
+                <div class='status-card'>
+                    <span class='status-title'>🔐 WireGuard</span>
+                    <span class='badge %WG_ST%'>%WG_TX%</span>
+                    <div class='wg-tech-info'>
+                        link: <span>%WG_LINK%</span><br>
+                        connected: <span>%WG_CONN%</span><br>
+                        state: <span>%WG_STATE%</span>
+                    </div>
+                </div>
+            </div>
+            
+            <div class='btn-group'>
+                <a href='/cgi-bin/index.cgi?action=start' class='btn btn-start'>▶️ Старт</a>
+                <a href='/cgi-bin/index.cgi?action=stop' class='btn btn-stop'>⏹️ Стоп</a>
+            </div>
 
-.tab-content.manage { display: %CSS_MANAGE%; }
-.tab-content.vkturn { display: %CSS_VKTURN%; }
-.tab-content.info   { display: %CSS_INFO%; }
-</style></head><body><div class='container'><h2>VK TURN PANEL</h2>
-<div class='tabs'>%TAB_NAVIGATION%</div>
+            <div class='log-header'>
+                <span class='log-title'>📋 Логи (свежие сверху)</span>
+                <a href='/cgi-bin/index.cgi?tab=%CURRENT_TAB%&action=clearlog' class='btn-refresh'>🗑️ Очистить</a>
+            </div>
+            <pre>%WEB_LOGS%</pre>
+        </div>
 
-<!-- TAB 1: MANAGE -->
-<div class='tab-content manage'>
-  <div class='status-grid'>
-    <div class='status-card'><span class='status-title'>Монитор</span><span class='badge %MON_ST%'>%MON_TX%</span></div>
-    <div class='status-card'><span class='status-title'>Интерфейс L2TP</span><span class='badge %L2TP_ST%'>%L2TP_TX%</span></div>
-    <div class='status-card'><span class='status-title'>Сервис vk-turn</span><span class='badge %VK_ST%'>%VK_TX%</span></div>
-    <div class='status-card'><span class='status-title'>WireGuard Туннель</span><span class='badge %WG_ST%'>%WG_TX%</span>
-        <div class='wg-tech-info'>
-            link: <span>%WG_LINK%</span><br>
-            connected: <span>%WG_CONN%</span><br>
-            state: <span>%WG_STATE%</span>
+        <!-- TAB 2: VK TURN -->
+        <div id='tab-vkturn' style='display: none;'>
+            %SAVE_MESSAGE%
+            <form>
+                <input type="hidden" name="csrf_token" value="%CSRF_TOKEN%">
+                
+                <div class='info-block'>
+                    <div class='info-title'>🌐 Параметры WebRTC</div>
+                    
+                    <div class='info-row' style="display: flex; align-items: center; gap: 12px; margin-bottom: 10px;">
+                        <label style="min-width: 130px; font-weight: bold; color: #a8a8b3;">Listen:</label>
+                        <input type="text" name="listen" value="%VK_LISTEN%" style="flex: 1; background: #121214; color: #fff; border: 1px solid #323238; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 12px;">
+                    </div>
+                    
+                    <div class='info-row' style="display: flex; align-items: center; gap: 12px; margin-bottom: 10px;">
+                        <label style="min-width: 130px; font-weight: bold; color: #a8a8b3;">Peer:</label>
+                        <input type="text" name="peer" value="%VK_PEER%" style="flex: 1; background: #121214; color: #fff; border: 1px solid #323238; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 12px;">
+                    </div>
+                    
+                    <div class='info-row' style="display: flex; align-items: center; gap: 12px; margin-bottom: 10px;">
+                        <label style="min-width: 130px; font-weight: bold; color: #a8a8b3;">Streams:</label>
+                        <input type="text" name="streams" value="%VK_STREAMS%" style="flex: 1; background: #121214; color: #fff; border: 1px solid #323238; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 12px;">
+                    </div>
+                    
+                    <div class='info-row' style="display: flex; align-items: center; gap: 12px; margin-bottom: 10px;">
+                        <label style="min-width: 130px; font-weight: bold; color: #a8a8b3;">Browser:</label>
+                        <select name="browser" style="flex: 1; background: #121214; color: #fff; border: 1px solid #323238; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 12px;">
+                            <option value="chrome" %VK_BROWSER_CHROME_SELECTED%>chrome</option>
+                            <option value="firefox" %VK_BROWSER_FIREFOX_SELECTED%>firefox</option>
+                            <option value="safari" %VK_BROWSER_SAFARI_SELECTED%>safari</option>
+                        </select>
+                    </div>
+                    
+                    <div class='info-row' style="display: flex; align-items: center; gap: 12px; margin-bottom: 10px;">
+                        <label style="min-width: 130px; font-weight: bold; color: #a8a8b3;">Obf Profile:</label>
+                        <select name="obf_profile" style="flex: 1; background: #121214; color: #fff; border: 1px solid #323238; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 12px;">
+                            <option value="none" %VK_PROFILE_NONE_SELECTED%>none</option>
+                            <option value="rtpopus" %VK_PROFILE_RTPOPUS_SELECTED%>rtpopus</option>
+                            <option value="rtpopus2" %VK_PROFILE_RTPOPUS2_SELECTED%>rtpopus2</option>
+                            <option value="rtpopus3" %VK_PROFILE_RTPOPUS3_SELECTED%>rtpopus3</option>
+                        </select>
+                    </div>
+                    
+                    <div class='info-row' style="display: flex; align-items: center; gap: 12px; margin-bottom: 10px;">
+                        <label style="min-width: 130px; font-weight: bold; color: #a8a8b3;">Obf Timing (ms):</label>
+                        <input type="text" name="obf_timing" value="%VK_TIMING%" style="flex: 1; background: #121214; color: #fff; border: 1px solid #323238; padding: 6px 10px; border-radius: 4px; font-family: monospace; font-size: 12px;">
+                    </div>
+                </div>
+                
+                <div class='info-block'>
+                    <div class='info-title'>🔑 Ключ шифрования</div>
+                    <div class='info-row'>
+                        <input type="text" name="obf_key" value="%VK_KEY%" style="width: 100%; color: #04d361;">
+                    </div>
+                </div>
+
+                <div class='info-block'>
+                    <div class='info-title'>🔗 Ссылки VK Calls</div>
+                    <div class='info-row' style="display: block;">
+                        <textarea name="links">%VK_LINKS%</textarea>
+                    </div>
+                </div>
+
+                <div class='btn-group'>
+                    <button type="submit" class='btn btn-save' style="width: 100%;">💾 СОХРАНИТЬ</button>
+                </div>
+            </form>
+        </div>
+
+        <!-- TAB 3: INFO -->
+        <div id='tab-info' style='display: none;'>
+            <div class='info-block'>
+                <div class='info-title'>💻 Система</div>
+                <div class='info-row'>Версия: <span>%SYS_VER%</span></div>
+                <div class='info-row'>Uptime: <span>%SYS_UT%</span></div>
+                <div class='info-row'>
+                    CPU: <span>%SYS_CPU%% <div class='progress-bar'><div class='progress-fill' style='width:%SYS_CPU%%'></div></div></span>
+                </div>
+                <div class='info-row'>
+                    RAM: <span>%SYS_RAM%% <div class='progress-bar'><div class='progress-fill' style='width:%SYS_RAM%%'></div></div></span>
+                </div>
+            </div>
+
+            <div class='info-block'>
+                <div class='info-title'>📶 Модем (4G/LTE)</div>
+                <div class='info-row'>Оператор: <span>%MDM_OP%</span></div>
+                <div class='info-row'>Тип: <span>%MDM_TY%</span></div>
+                <div class='info-row'>RSRP: <span>%MDM_SP% dBm</span></div>
+                <div class='info-row'>RSRQ: <span>%MDM_SQ% dB</span></div>
+                <div class='info-row'>IP: <span>%MDM_IP%</span></div>
+            </div>
+
+            <div class='info-block'>
+                <div class='info-title'>⚡ Действия</div>
+                <div class='btn-group'>
+                    <a href='/cgi-bin/index.cgi?tab=info&action=recon' class='btn btn-blue'>🔄 Переподключить L2TP</a>
+                    <a href='/cgi-bin/index.cgi?tab=info&action=reboot' class='btn btn-stop' onclick='return confirm("Точно перезагрузить роутер?")'>🔴 Перезагрузка</a>
+                </div>
+            </div>
         </div>
     </div>
-  </div>
-  <div class='btn-group'>
-    <a href='?action=start' class='btn btn-start'>Старт</a>
-    <a href='?action=stop' class='btn btn-stop'>Стоп</a>
-    <a href='?action=restart' class='btn btn-grey'>Рестарт</a>
-  </div>
-  <div class='log-header'><span class='log-title'>Последние 100 логов (вверху свежие)</span><a href='?tab=%CURRENT_TAB%&action=clearlog' class='btn-refresh' style='color:#f74646; font-size:12px; text-decoration:none;'>Очистить лог</a></div>
-  <pre>%WEB_LOGS%</pre>
-</div>
 
-<!-- TAB 2: VK TURN -->
-<div class='tab-content vkturn'>
-  <form method="POST" action="index.cgi?tab=vkturn">
-    <div class='info-block'>
-      <div class='info-title'>Параметры WebRTC клиента</div>
-      <div class='info-row'>Локальный сокет (LISTEN): <input type="text" name="listen" value="%VK_LISTEN%"></div>
-      <div class='info-row'>Удаленный узел (PEER): <input type="text" name="peer" value="%VK_PEER%"></div>
-      <div class='info-row'>Количество потоков: <input type="text" name="streams" value="%VK_STREAMS%"></div>
-      <div class='info-row'>Профиль маскировки: <input type="text" name="obf_profile" value="%VK_PROFILE%"></div>
-      <div class='info-row'>Межпакетная задержка для RTP-мимикрии: <input type="text" name="obf_timing" value="%VK_TIMING%"></div>
-      <div class='info-row'>Фейковый браузер: <input type="text" name="browser" value="%VK_BROWSER%"></div>
-    </div>
-    
-    <div class='info-block'>
-      <div class='info-title'>Ключ шифрования трафика (obf_key)</div>
-      <div class='info-row'><input type="text" name="obf_key" value="%VK_KEY%" style="width: 100%; color: #04d361;"></div>
-    </div>
+    <script>
+    // Переключение вкладок
+    document.querySelectorAll('.tab-link').forEach(function(tab) {
+        tab.addEventListener('click', function(e) {
+            e.preventDefault();
+            var target = this.getAttribute('href');
+            var tabId = target.split('tab=')[1];
+            
+            // Скрываем все вкладки
+            document.querySelectorAll('#tab-manage, #tab-vkturn, #tab-info').forEach(function(el) {
+                el.style.display = 'none';
+            });
+            
+            // Показываем нужную
+            if (tabId === 'manage') document.getElementById('tab-manage').style.display = 'block';
+            else if (tabId === 'vkturn') document.getElementById('tab-vkturn').style.display = 'block';
+            else if (tabId === 'info') document.getElementById('tab-info').style.display = 'block';
+            
+            // Обновляем URL
+            history.pushState(null, '', target);
+        });
+    });
+    </script>
 
-    <div class='info-block'>
-      <div class='info-title'>Ссылки VK Calls через запятую (LINKS)</div>
-      <div class='info-row' style="display: block;"><textarea name="links">%VK_LINKS%</textarea></div>
-    </div>
-
-    <div class='btn-group'>
-      <button type="submit" class='btn btn-start' style="width: 100%;">💾 СОХРАНИТЬ КОНФИГУРАЦИЮ</button>
-    </div>
-  </form>
-</div>
-
-<!-- TAB 3: INFO -->
-<div class='tab-content info'>
-  <div class='info-block'>
-    <div class='info-title'>Железо Keenetic</div>
-    <div class='info-row'>Версия KeeneticOS: <span>%SYS_VER%</span></div>
-    <div class='info-row'>Время работы: <span>%SYS_UT%</span></div>
-    <div class='info-row'>Загрузка ЦП: <span>%SYS_CPU%% <div class='progress-bar'><div class='progress-fill' style='width:%SYS_CPU%%'></div></div></span></div>
-    <div class='info-row'>Занято ОЗУ: <span>%SYS_RAM%% <div class='progress-bar'><div class='progress-fill' style='width:%SYS_RAM%%'></div></div></span></div>
-  </div>
-  <div class='info-block'>
-    <div class='info-title'>Мобильная сеть (4G/LTE)</div>
-    <div class='info-row'>Оператор: <span>%MDM_OP%</span></div>
-    <div class='info-row'>Тип сети: <span>%MDM_TY%</span></div>
-    <div class='info-row'>Сигнал RSRP: <span>%MDM_SP% dBm</span></div>
-    <div class='info-row'>Качество RSRQ: <span>%MDM_SQ% dB</span></div>
-    <div class='info-row'>IP-адрес модема: <span>%MDM_IP%</span></div>
-  </div>
-  <div class='info-block'>
-    <div class='info-title'>Быстрые действия</div>
-    <div class='btn-group'>
-      <a href='?tab=info&action=recon' class='btn btn-blue'>Переподключить L2TP</a>
-      <a href='?tab=info&action=reboot' class='btn btn-stop' onclick='return confirm("Перезагрузить роутер?")'>Перезагрузка ЦП</a>
-    </div>
-  </div>
-</div>
-
-</div></body></html>
+    <script src="/cgi-bin/script.js"></script>
+</body>
+</html>
