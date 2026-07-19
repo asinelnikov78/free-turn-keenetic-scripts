@@ -1,20 +1,30 @@
 #!/bin/sh
 
-# ==============================================================================
-# S99vk-turn-panel - Сбор всей телеметрии и флагов WebRTC в кэш статусов (Финал)
-# ==============================================================================
-
 ENABLED=yes
 PROCS=vk-turn-panel
 DESC="VK TURN PANEL Automation Daemon"
 PATH=/opt/sbin:/opt/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
+# ============================================================
+# 1. КОНФИГУРАЦИЯ
+# ============================================================
 JSON_CONF="/opt/etc/vk-turn/vk_turn_settings.json"
+CGI_DIR="/opt/share/www/cgi-bin"
+
+CURL_TIMEOUT=5
+L2TP_WAIT=3
+WG_WAIT=2
+
+# ===== СДВИГ ВРЕМЕНИ МЕЖДУ СИСТЕМОЙ И ЛОГОМ КЛИЕНТА =====
+# Лог клиента пишет в UTC, системное время в UTC+4
+# Разница: 4 часа = 14400 секунд
+TIME_OFFSET=14400  # 4 часа в секундах
 
 get_cfg() {
     awk -F'"' '/"'$1'"/ {print $4}' "$JSON_CONF" | head -n 1
 }
 
+WEB_LOG_FILE="/opt/share/www/cgi-bin/vk-turn-panel.log"
 VK_SCRIPT=$(get_cfg "vk_script")
 LOG_FILE=$(get_cfg "log_file")
 PIDFILE=$(get_cfg "pid_file")
@@ -29,7 +39,6 @@ MODEM_IFACE=$(get_cfg "modem_name")
 [ -z "$CHECK_INTERVAL" ] && CHECK_INTERVAL=5
 [ -z "$PIDFILE" ] && PIDFILE="/var/run/vk-turn-panel.pid"
 [ -z "$LOG_FILE" ] && LOG_FILE="/opt/etc/vk-turn/logs/vk-turn-panel.log"
-# ИСПРАВЛЕНО: Кэш пишется сразу внутрь песочницы cgi-bin папки веб-сервера
 [ -z "$WEB_STATUS_FILE" ] && WEB_STATUS_FILE="/opt/share/www/cgi-bin/mon_web_status.txt"
 [ -z "$NEED_INFO_FILE" ] && NEED_INFO_FILE="/opt/var/need_info.txt"
 [ -z "$L2TP_SYS_NAME" ] && L2TP_SYS_NAME="L2tp0"
@@ -37,17 +46,60 @@ MODEM_IFACE=$(get_cfg "modem_name")
 [ -z "$MODEM_IFACE" ] && MODEM_IFACE="UsbLte0"
 
 mkdir -p $(dirname "$LOG_FILE") 2>/dev/null
+mkdir -p $(dirname "$PIDFILE") 2>/dev/null
 
+MONITOR_STATE="/var/run/vk-turn-monitor.state"
+
+# ============================================================
+# 2. ЛОГГИРОВАНИЕ
+# ============================================================
 log() {
+    # Основной лог (полный)
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
+    # Веб-лог (только 100 строк)
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$WEB_LOG_FILE"
+    tail -100 "$WEB_LOG_FILE" > "$WEB_LOG_FILE.tmp" 2>/dev/null
+    mv "$WEB_LOG_FILE.tmp" "$WEB_LOG_FILE" 2>/dev/null
+    sync
 }
 
+# ============================================================
+# 3. МОНИТОР (состояние)
+# ============================================================
+set_monitor_state() {
+    CURRENT=$(cat /var/run/vk-turn-monitor.state 2>/dev/null)
+    if [ "$CURRENT" != "$1" ]; then
+        echo "$1" > /var/run/vk-turn-monitor.state
+        MONITOR_ENABLED="$1"
+        log "🎛️ Монитор: $2"
+        save_web_status
+    fi
+}
+
+monitor_start() {
+    set_monitor_state 1 "Включен"
+    log "🎛️ Монитор включён"
+}
+
+monitor_stop() {
+    set_monitor_state 0 "Выключен"
+    stop_vk
+    stop_wireguard
+    log "🎛️ Монитор выключен"
+}
+
+# ============================================================
+# 4. L2TP
+# ============================================================
 check_l2tp() {
-    STATUS=$(curl -s http://localhost:79/rci/show/interface/$L2TP_SYS_NAME | grep -A 5 '"summary":' | grep -o '"link": *"[^"]*"' | head -n 1 | cut -d'"' -f4)
+    STATUS=$(curl -s --max-time $CURL_TIMEOUT http://localhost:79/rci/show/interface/$L2TP_SYS_NAME 2>/dev/null | grep -A 5 '"summary":' | grep -o '"link": *"[^"]*"' | head -n 1 | cut -d'"' -f4)
     [ "$STATUS" = "running" ] && return 0
     return 1
 }
 
+# ============================================================
+# 5. VK (клиент)
+# ============================================================
 is_vk_running() {
     if [ -f "/opt/etc/vk-turn/run/vk-turn.pid" ]; then
         pid=$(cat "/opt/etc/vk-turn/run/vk-turn.pid" 2>/dev/null)
@@ -56,38 +108,282 @@ is_vk_running() {
     return 1
 }
 
+check_vk_connected() {
+    if ! is_vk_running; then
+        return 1
+    fi
+    
+    if [ ! -f "/opt/etc/vk-turn/logs/vk-turn.log" ]; then
+        return 1
+    fi
+    
+    # ===== 1. НАХОДИМ СТРОКУ С "Free Turn Proxy client" =====
+    START_LINE_NUM=$(grep -n "Free Turn Proxy client" "/opt/etc/vk-turn/logs/vk-turn.log" 2>/dev/null | tail -1 | cut -d':' -f1)
+    
+    if [ -z "$START_LINE_NUM" ]; then
+        return 1
+    fi
+    
+    # ===== 2. БЕРЁМ СТРОКИ ОТ ЭТОЙ ПОЗИЦИИ ДО КОНЦА =====
+    tail -n +"$START_LINE_NUM" "/opt/etc/vk-turn/logs/vk-turn.log" 2>/dev/null > /tmp/vk_log_tail
+    
+    if [ ! -s /tmp/vk_log_tail ]; then
+        return 1
+    fi
+    
+    # ===== 3. ПРОВЕРЯЕМ =====
+    DTLS_COUNT=$(grep -c "Established DTLS connection" /tmp/vk_log_tail)
+    CAPTCHA_OK=$(grep -c "Captcha.*solver succeeded" /tmp/vk_log_tail)
+    AUTH_OK=$(grep -c "VK Auth.*Success with client_id" /tmp/vk_log_tail)
+    TOTAL=$(grep "total streams" /tmp/vk_log_tail | tail -1 | grep -o '[0-9]*' | tail -1)
+    
+    rm -f /tmp/vk_log_tail
+    
+    # ===== 4. ПРОВЕРЯЕМ =====
+    if [ "$CAPTCHA_OK" -eq 0 ] || [ "$AUTH_OK" -eq 0 ]; then
+        return 1
+    fi
+    
+    [ -z "$TOTAL" ] && TOTAL=12
+    MIN_REQUIRED=$((TOTAL * 50 / 100))
+    
+    if [ "$DTLS_COUNT" -ge "$MIN_REQUIRED" ]; then
+        return 0
+    fi
+    
+    return 1
+}
+
+start_vk() {
+    if is_vk_running; then
+        log "ℹ️ VK уже запущен"
+        return 0
+    fi
+    
+    log "🚀 Запуск VK..."
+    
+    VK_CLIENT="/opt/etc/vk-turn/client"
+    if [ ! -x "$VK_CLIENT" ]; then
+        log "❌ Клиент не найден: $VK_CLIENT"
+        return 1
+    fi
+    
+    # Освобождаем порт 9000
+    if netstat -tuln 2>/dev/null | grep -q ":9000 "; then
+        PID=$(netstat -tulnp 2>/dev/null | grep ":9000 " | awk '{print $7}' | cut -d'/' -f1)
+        if [ -n "$PID" ]; then
+            log "🛑 Убиваем старый процесс (PID: $PID)..."
+            kill -9 "$PID" 2>/dev/null
+            sleep 1
+        fi
+    fi
+    
+    # Получаем параметры из JSON
+    LISTEN=$(get_cfg "listen")
+    PEER=$(get_cfg "peer")
+    LINKS=$(get_cfg "links")
+    STREAMS=$(get_cfg "streams")
+    BROWSER=$(get_cfg "browser")
+    OBF_PROFILE=$(get_cfg "obf_profile")
+    OBF_KEY=$(get_cfg "obf_key")
+    OBF_TIMING=$(get_cfg "obf_timing")
+    
+    # Проверяем, что параметры есть
+    if [ -z "$LISTEN" ] || [ -z "$PEER" ] || [ -z "$LINKS" ]; then
+        log "❌ Не все параметры заданы в JSON"
+        return 1
+    fi
+    
+    # ===== ЭКРАНИРУЕМ ОПАСНЫЕ СИМВОЛЫ =====
+    # Экранируем LINKS (кавычки, амперсанд, доллар)
+    LINKS_ESC=$(echo "$LINKS" | sed 's/&/\\&/g' | sed 's/"/\\"/g' | sed 's/\$/\\$/g')
+    
+    # Формируем команду
+    CMD="$VK_CLIENT -listen $LISTEN -peer $PEER -links \"$LINKS_ESC\" -streams-per-cred $STREAMS -browser $BROWSER -obf-profile $OBF_PROFILE -obf-key $OBF_KEY -obf-timing $OBF_TIMING"
+    
+    log "📋 Команда: $CMD"
+    
+    # Запускаем
+    $VK_CLIENT -listen $LISTEN -peer $PEER -links "$LINKS" -streams-per-cred $STREAMS -browser $BROWSER -obf-profile $OBF_PROFILE -obf-key $OBF_KEY -obf-timing $OBF_TIMING >> /opt/etc/vk-turn/logs/vk-turn.log 2>&1 &
+    
+    PID=$!
+    echo $PID > "/opt/etc/vk-turn/run/vk-turn.pid"
+    sleep 2
+    
+    # ===== ПРОВЕРЯЕМ, ЧТО VK ЗАПУСТИЛСЯ =====
+    if ! is_vk_running; then
+        log "❌ VK не запустился"
+        rm -f "/opt/etc/vk-turn/run/vk-turn.pid"
+        return 1
+    fi
+	log "✅ VK запущен (PID: $PID)"
+	log "   listen: $LISTEN"
+	log "   peer: $PEER"
+	log "   streams: $STREAMS"
+	log "   browser: $BROWSER"
+	log "   obf-profile: $OBF_PROFILE"
+	log "   obf-timing: $OBF_TIMING"
+	
+	VK_ST="starting"
+    VK_TX="ПОДКЛЮЧАЕТСЯ"
+    save_web_status
+	
+	# ===== ЖДЁМ ПОЛНОЙ ГОТОВНОСТИ =====
+	log "⏳ Ожидание полной готовности VK (DTLS установлены)..."
+	
+	WAIT_COUNT=0
+	MAX_WAIT=60
+
+	while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
+        # ===== РЕТРАНСЛЯЦИЯ ЛОГА КЛИЕНТА (ВНУТРИ ОЖИДАНИЯ) =====
+        if [ -f "/opt/etc/vk-turn/logs/vk-turn.log" ]; then
+            if [ -f "/tmp/vk_log_offset" ]; then
+                OFFSET=$(cat "/tmp/vk_log_offset" 2>/dev/null)
+            else
+                OFFSET=0
+            fi
+            
+            CURRENT_SIZE=$(wc -c < "/opt/etc/vk-turn/logs/vk-turn.log" 2>/dev/null)
+            if [ "$CURRENT_SIZE" -gt "$OFFSET" ]; then
+                NEW_LINES=$(dd if="/opt/etc/vk-turn/logs/vk-turn.log" bs=1 skip=$OFFSET 2>/dev/null)
+                if [ -n "$NEW_LINES" ]; then
+                    echo "$NEW_LINES" | while IFS= read -r line; do
+                        [ -z "$line" ] && continue
+                        log "📱 VK: $line"
+                    done
+                fi
+                echo "$CURRENT_SIZE" > "/tmp/vk_log_offset"
+            fi
+        fi
+	
+		if check_vk_connected; then
+			# ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: ЖДЁМ 3 СЕКУНДЫ ДЛЯ СТАБИЛИЗАЦИИ
+			log "✅ VK готов, ждём 3 секунды для стабилизации..."
+			sleep 3
+			
+			# ПРОВЕРЯЕМ ЕЩЁ РАЗ
+			if check_vk_connected; then
+				log "✅ VK полностью готов (DTLS установлены)"
+			save_web_status
+			return 0
+		fi
+	fi
+	sleep 2
+	WAIT_COUNT=$((WAIT_COUNT + 2))
+    done
+    
+    log "⚠️ Таймаут: VK не готов за $MAX_WAIT секунд"
+    return 1
+}
+
+stop_vk() {
+    if is_vk_running; then
+        PID=$(cat "/opt/etc/vk-turn/run/vk-turn.pid" 2>/dev/null)
+        if [ -n "$PID" ]; then
+            log "🛑 Остановка VK (PID: $PID)..."
+            kill "$PID" 2>/dev/null
+            sleep 2
+            if kill -0 "$PID" 2>/dev/null; then
+                kill -9 "$PID" 2>/dev/null
+            fi
+            rm -f "/opt/etc/vk-turn/run/vk-turn.pid"
+            log "✅ VK остановлен"
+        fi
+    else
+        log "ℹ️ VK уже остановлен"
+    fi
+}
+
+# ============================================================
+# 6. WIREGUARD
+# ============================================================
 is_wg_running() {
-    STATUS=$(curl -s http://localhost:79/rci/show/interface/$WG_IFACE | grep -o '"state": *"[^"]*"' | head -n 1 | cut -d'"' -f4)
+    STATUS=$(curl -s --max-time $CURL_TIMEOUT http://localhost:79/rci/show/interface/$WG_IFACE 2>/dev/null | grep -o '"state": *"[^"]*"' | head -n 1 | cut -d'"' -f4)
     [ "$STATUS" = "up" ] && return 0
     return 1
 }
 
 start_wireguard() {
-    if is_wg_running; then return 0; fi
+    if is_wg_running; then
+        log "ℹ️ WireGuard уже запущен"
+        return 0
+    fi
+    
     log "🔐 Запуск WireGuard ($WG_IFACE)..."
-    /opt/sbin/ndmq -p "interface $WG_IFACE up" > /dev/null 2>&1
-    sleep 2
+    /opt/bin/ndmq -p "interface $WG_IFACE up" > /dev/null 2>&1
+    
+    # Ждём, пока WG поднимется (максимум 30 сек)
+    WAIT_COUNT=0
+    MAX_WAIT=30
+    while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
+        if is_wg_running; then
+            log "✅ WireGuard успешно запущен"
+            # Обновляем статус в вебе
+            save_web_status
+            return 0
+        fi
+        sleep 1
+        WAIT_COUNT=$((WAIT_COUNT + 1))
+    done
+    
+    log "❌ WireGuard не запустился за $MAX_WAIT секунд"
+    return 1
 }
 
 stop_wireguard() {
-    if ! is_wg_running; then return 0; fi
+    if ! is_wg_running; then
+        log "ℹ️ WireGuard уже остановлен"
+        return 0
+    fi
+    
     log "🔒 Остановка WireGuard ($WG_IFACE)..."
-    /opt/sbin/ndmq -p "interface $WG_IFACE down" > /dev/null 2>&1
-    sleep 1
+    /opt/bin/ndmq -p "interface $WG_IFACE down" > /dev/null 2>&1
+    
+    sleep 2
+    
+    if ! is_wg_running; then
+        log "✅ WireGuard остановлен"
+        save_web_status
+        return 0
+    else
+        log "⚠️ WireGuard не остановился, принудительно..."
+        /opt/bin/ndmq -p "interface $WG_IFACE down" > /dev/null 2>&1
+        sleep 2
+        
+        if ! is_wg_running; then
+            log "✅ WireGuard принудительно остановлен"
+            save_web_status
+            return 0
+        else
+            log "❌ Не удалось остановить WireGuard"
+            return 1
+        fi
+    fi
 }
 
+# ============================================================
+# 7. ВЕБ-КЭШ
+# ============================================================
 save_web_status() {
-    WG_JSON=$(curl -s http://localhost:79/rci/show/interface/$WG_IFACE)
+    # ===== ЧИТАЕМ АКТУАЛЬНОЕ СОСТОЯНИЕ МОНИТОРА =====
+    if [ -f "$MONITOR_STATE" ]; then
+        MONITOR_ENABLED=$(cat "$MONITOR_STATE" 2>/dev/null)
+    else
+        MONITOR_ENABLED=1
+    fi
+
+    
+    WG_JSON=$(curl -s --max-time $CURL_TIMEOUT http://localhost:79/rci/show/interface/$WG_IFACE 2>/dev/null)
     WG_LINK=$(echo "$WG_JSON" | grep -o '"link": *"[^"]*"' | head -n 1 | cut -d'"' -f4)
     WG_CONN=$(echo "$WG_JSON" | grep -o '"connected": *"[^"]*"' | head -n 1 | cut -d'"' -f4)
     WG_STATE=$(echo "$WG_JSON" | grep -o '"state": *"[^"]*"' | head -n 1 | cut -d'"' -f4)
-
+    
     [ -z "$WG_LINK" ] && WG_LINK="down"
     [ -z "$WG_CONN" ] && WG_CONN="no"
     [ -z "$WG_STATE" ] && WG_STATE="down"
-
+    
     if [ -f "$NEED_INFO_FILE" ] || [ ! -f "$WEB_STATUS_FILE" ]; then
-        SYS_JSON=$(curl -s http://localhost:79/rci/show/system)
+        SYS_JSON=$(curl -s --max-time $CURL_TIMEOUT http://localhost:79/rci/show/system 2>/dev/null)
         SYS_CPULOAD=$(echo "$SYS_JSON" | grep -o '"cpuload": *[0-9]*' | head -n 1 | awk '{print $2}')
         SYS_MEMTOTAL=$(echo "$SYS_JSON" | grep -o '"memtotal": *[0-9]*' | head -n 1 | awk '{print $2}')
         SYS_MEMFREE=$(echo "$SYS_JSON" | grep -o '"memfree": *[0-9]*' | head -n 1 | awk '{print $2}')
@@ -96,57 +392,65 @@ save_web_status() {
         RAW_VER=$(echo "$SYS_JSON" | grep -o '"version": *"[^"]*"' | head -n 1 | cut -d'"' -f4)
         [ -z "$RAW_VER" ] && RAW_VER=$(cat /etc/firmware 2>/dev/null | head -n 1)
         [ -z "$RAW_VER" ] && SYS_VERSION="5.x (KeeneticOS)" || SYS_VERSION="v$RAW_VER (KeeneticOS)"
-
+        
         if [ -n "$SYS_MEMTOTAL" ] && [ "$SYS_MEMTOTAL" -gt 0 ]; then
             SYS_MEMUSED=$((100 - (SYS_MEMFREE * 100 / SYS_MEMTOTAL)))
         else SYS_MEMUSED="0"; fi
-
+        
         if [ -n "$SYS_UPTIME" ] && [ "$SYS_UPTIME" -gt 0 ] 2>/dev/null; then
-            UT_D=$((SYS_UPTIME / 86400)); UT_H=$(((SYS_UPTIME % 86400) / 3600)); UT_M=$(((SYS_UPTIME % 3600) / 60))
+            UT_D=$((SYS_UPTIME / 86400))
+            UT_H=$(((SYS_UPTIME % 86400) / 3600))
+            UT_M=$(((SYS_UPTIME % 3600) / 60))
             [ "$UT_D" -gt 0 ] && SYS_UT_STR="${UT_D}д. ${UT_H}ч. ${UT_M}м." || SYS_UT_STR="${UT_H}:${UT_M}"
         else
             SYS_UT_STR=$(uptime | awk '{print $3}' | cut -d',' -f1)
         fi
         [ -z "$SYS_CPULOAD" ] && SYS_CPULOAD="0"
-
-        MDM_JSON=$(curl -s http://localhost:79/rci/show/interface/$MODEM_IFACE)
+        
+        MDM_JSON=$(curl -s --max-time $CURL_TIMEOUT http://localhost:79/rci/show/interface/$MODEM_IFACE 2>/dev/null)
         MDM_OPERATOR=$(echo "$MDM_JSON" | grep -o '"operator": *"[^"]*"' | head -n 1 | cut -d'"' -f4)
         MDM_RSRP=$(echo "$MDM_JSON" | grep -o '"rsrp": *"[^"]*"' | head -n 1 | cut -d'"' -f4)
         MDM_RSRQ=$(echo "$MDM_JSON" | grep -o '"rsrq": *"[^"]*"' | head -n 1 | cut -d'"' -f4)
         MDM_IP=$(echo "$MDM_JSON" | grep -o '"address": *"[^"]*"' | head -n 1 | cut -d'"' -f4)
-
+        
         RAW_NET_CODE=$(echo "$MDM_JSON" | grep -o '"operator-raw": *"[^"]*"' | cut -d',' -f4 | tr -d '"\} ')
         case "$RAW_NET_CODE" in
             *7*) MDM_TYPE="4G (LTE)" ;;
             *2*) MDM_TYPE="3G (UMTS)" ;;
             *)   MDM_TYPE="4G (LTE)" ;;
         esac
-
+        
         [ -z "$MDM_OPERATOR" ] && MDM_OPERATOR="Нет сети"
         [ -z "$MDM_RSRP" ] && MDM_RSRP="—"
         [ -z "$MDM_RSRQ" ] && MDM_RSRQ="—"
         [ -z "$MDM_IP" ] && MDM_IP="—"
         rm -f "$NEED_INFO_FILE" 2>/dev/null
     fi
-
-    if [ -f "$LOG_FILE" ]; then
-        RAW_LOGS=$(tail -n 100 "$LOG_FILE" 2>/dev/null | awk '{line[NR]=$0} END {for (i=NR;i>0;i--) print line[i]}')
-    else
-        RAW_LOGS="Лог-файл автоматики еще не создан."
+    
+    if [ ! -f "$CGI_DIR/cmd_savejson" ]; then
+        VK_LISTEN=$(get_cfg "listen")
+        VK_PEER=$(get_cfg "peer")
+        VK_STREAMS=$(get_cfg "streams")
+        VK_BROWSER=$(get_cfg "browser")
+        VK_PROFILE=$(get_cfg "obf_profile")
+        VK_TIMING=$(get_cfg "obf_timing")
+        VK_KEY=$(get_cfg "obf_key")
+        VK_LINKS=$(get_cfg "links")
     fi
-
-    V_LISTEN=$(get_cfg "listen")
-    V_PEER=$(get_cfg "peer")
-    V_STREAMS=$(get_cfg "streams")
-    V_BROWSER=$(get_cfg "browser")
-    V_PROFILE=$(get_cfg "obf_profile")
-    V_TIMING=$(get_cfg "obf_timing")
-    V_KEY=$(get_cfg "obf_key")
-    V_LINKS=$(get_cfg "links")
-
+    
     {
         if check_l2tp; then echo "L2TP=\"up\""; else echo "L2TP=\"down\""; fi
-        if is_vk_running; then echo "VK=\"up\""; else echo "VK=\"down\""; fi
+        
+        if is_vk_running; then
+            if check_vk_connected; then 
+	    	echo "VK=\"up\""
+	    else
+	    	echo "VK=\"starting\""
+            fi
+        else
+            echo "VK=\"down\""
+        fi
+#        if is_vk_running; then echo "VK=\"up\""; else echo "VK=\"down\""; fi
         if [ "$WG_STATE" = "up" ]; then echo "WG=\"up\""; else echo "WG=\"down\""; fi
         
         echo "WG_L=\"$WG_LINK\""
@@ -165,86 +469,304 @@ save_web_status() {
         echo "MDM_IP=\"$MDM_IP\""
         
         echo "VK_BIN=\"$VK_SCRIPT\""
-        echo "VK_LISTEN=\"$V_LISTEN\""
-        echo "VK_PEER=\"$V_PEER\""
-        echo "VK_STREAMS=\"$V_STREAMS\""
-        echo "VK_BROWSER=\"$V_BROWSER\""
-        echo "VK_PROFILE=\"$V_PROFILE\""
-        echo "VK_TIMING=\"$V_TIMING\""
-        echo "VK_KEY=\"$V_KEY\""
-        echo "VK_LINKS=\"$V_LINKS\""
+        echo "VK_LISTEN=\"$VK_LISTEN\""
+        echo "VK_PEER=\"$VK_PEER\""
+        echo "VK_STREAMS=\"$VK_STREAMS\""
+        echo "VK_BROWSER=\"$VK_BROWSER\""
+        echo "VK_PROFILE=\"$VK_PROFILE\""
         
-        # ДОБАВЛЕНО: Экспорт путей и интерфейсов для корректной работы GET-кнопок веб-панели
+        VK_TIMING_CLEAN=$(echo "$VK_TIMING" | sed 's/ms$//')
+        echo "VK_TIMING=\"$VK_TIMING_CLEAN\""
+        echo "VK_KEY=\"$VK_KEY\""
+        echo "VK_LINKS=\"$VK_LINKS\""
+        
         echo "PID_FILE=\"$PIDFILE\""
         echo "L2TP_NAME=\"$L2TP_SYS_NAME\""
         echo "WG_NAME=\"$WG_IFACE\""
+        echo "MONITOR_ENABLED=\"$MONITOR_ENABLED\""
     } > "$WEB_STATUS_FILE"
+    chmod 666 "$WEB_STATUS_FILE" 2>/dev/null
 }
 
-monitor_cycle() {
-    log "=== ЗАПУСК МОНИТОРИНГА ==="
-    LAST_STATE=-1
-    while true; do
-        save_web_status
-        if check_l2tp; then
-            if [ "$LAST_STATE" -ne 1 ]; then log "🔄 L2TP поднялся. Отключаем резерв."; LAST_STATE=1; fi
-            stop_wireguard
-            if is_vk_running; then "$VK_SCRIPT" stop > /dev/null 2>&1; fi
-        else
-            if [ "$LAST_STATE" -ne 0 ]; then log "⚠️ L2TP упал. Включаем резерв."; LAST_STATE=0; fi
-            if ! is_vk_running; then "$VK_SCRIPT" start > /dev/null 2>&1; sleep 4; fi
-            if is_vk_running; then start_wireguard; fi
-        fi
-        sleep "$CHECK_INTERVAL"
-    done
-}
 
+# ============================================================
+# 8. ОСНОВНОЙ ПРОЦЕСС
+# ============================================================
 start() {
     if [ -f "$PIDFILE" ]; then
         pid=$(cat "$PIDFILE" 2>/dev/null)
-        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then return 0; fi
+        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then 
+            log "ℹ️ Процесс уже запущен"
+            return 0
+        fi
         rm -f "$PIDFILE"
     fi
-    echo "🚀 Запуск службы vk-turn-panel..."
+    log "🚀 Запуск процесса..."
     save_web_status
-    monitor_cycle &
+    set_monitor_state 1 "Включён"
+    {
+        COUNTER=0
+        LAST_STATE=-1
+        VK_READY=0
+        
+        while true; do
+            # ===== 1. HEARTBEAT ОТ ВЕБА =====
+            if [ -f "/var/run/web-alive" ]; then
+                LAST=$(cat "/var/run/web-alive" 2>/dev/null)
+                NOW=$(date +%s)
+                if [ $((NOW - LAST)) -lt 3 ]; then
+		# Веб жив — обновляем кэш
+                    save_web_status
+                else
+		# Веб умер — удаляем файл
+                    rm -f "/var/run/web-alive"
+                fi
+            fi
+            
+            # ===== 2. СОСТОЯНИЕ МОНИТОРА =====
+            if [ -f "$MONITOR_STATE" ]; then
+                MONITOR_ENABLED=$(cat "$MONITOR_STATE" 2>/dev/null)
+            else
+                MONITOR_ENABLED=1
+            fi
+            
+            # ===== 3. ВЕБ-ТРИГГЕРЫ =====
+            if [ -f "$CGI_DIR/cmd_start" ]; then
+                rm -f "$CGI_DIR/cmd_start"
+                set_monitor_state 1 "Включён"
+                log "🎛️ Веб: старт монитора"
+            fi
+            
+            if [ -f "$CGI_DIR/cmd_stop" ]; then
+                rm -f "$CGI_DIR/cmd_stop"
+                set_monitor_state 0 "Выключен"
+                stop_vk
+                stop_wireguard
+                log "🎛️ Веб: стоп монитора"
+            fi
+            
+            if [ -f "$CGI_DIR/cmd_clearlog" ]; then
+                rm -f "$CGI_DIR/cmd_clearlog"
+                echo "$(date '+%Y-%m-%d %H:%M:%S') - 🧹 Лог очищен" > "$LOG_FILE"
+                chmod 666 "$LOG_FILE" 2>/dev/null
+            fi
+            
+            if [ -f "$CGI_DIR/cmd_reboot" ]; then
+                rm -f "$CGI_DIR/cmd_reboot"
+                log "⚠️ Веб: перезагрузка роутера"
+                /opt/sbin/ndmq -p "system reboot" >/dev/null 2>&1
+            fi
+            
+            if [ -f "$CGI_DIR/cmd_recon" ]; then
+                rm -f "$CGI_DIR/cmd_recon"
+                log "🔄 Веб: переподключение L2TP"
+                /opt/sbin/ndmq -p "interface ${L2TP_SYS_NAME} down" >/dev/null 2>&1
+                sleep 2
+                /opt/sbin/ndmq -p "interface ${L2TP_SYS_NAME} up" >/dev/null 2>&1
+            fi
+            
+            # ===== 4. ОБРАБОТКА QUERY_STRING =====
+            if [ -f "$CGI_DIR/cmd_query" ]; then
+                Q_STRING=$(cat "$CGI_DIR/cmd_query" 2>/dev/null)
+                rm -f "$CGI_DIR/cmd_query"
+                
+                if [ -n "$Q_STRING" ]; then
+                    log "📥 Получены настройки из QUERY_STRING"
+                    
+                    LISTEN=""; PEER=""; STREAMS=""; BROWSER=""; PROFILE=""; TIMING=""; KEY=""; LINKS=""
+                    
+                    IFS='&'
+                    for PAIR in $Q_STRING; do
+                        case "$PAIR" in
+                            listen=*) LISTEN=$(echo "${PAIR#listen=}" | sed 's/%3A/:/g' | sed 's/%2F/\//g') ;;
+                            peer=*) PEER=$(echo "${PAIR#peer=}" | sed 's/%3A/:/g' | sed 's/%2F/\//g') ;;
+                            streams=*) STREAMS="${PAIR#streams=}" ;;
+                            browser=*) BROWSER="${PAIR#browser=}" ;;
+                            obf_profile=*) PROFILE="${PAIR#obf_profile=}" ;;
+                            obf_timing=*) TIMING="${PAIR#obf_timing=}" ;;
+                            obf_key=*) KEY="${PAIR#obf_key=}" ;;
+                            links=*) LINKS=$(echo "${PAIR#links=}" | sed 's/%2C/,/g' | sed 's/%20/ /g' | sed 's/%3A/:/g' | sed 's/%2F/\//g') ;;
+                        esac
+                    done
+                    
+                    # Добавляем ms к TIMING
+                    case "$TIMING" in
+                        *ms) ;;
+                        *) TIMING="${TIMING}ms" ;;
+                    esac
+                    
+                    # Экранируем
+                    LISTEN_ESC=$(echo "$LISTEN" | sed 's/[\/&"]/\\&/g')
+                    PEER_ESC=$(echo "$PEER" | sed 's/[\/&"]/\\&/g')
+                    STREAMS_ESC=$(echo "$STREAMS" | sed 's/[\/&"]/\\&/g')
+                    BROWSER_ESC=$(echo "$BROWSER" | sed 's/[\/&"]/\\&/g')
+                    PROFILE_ESC=$(echo "$PROFILE" | sed 's/[\/&"]/\\&/g')
+                    TIMING_ESC=$(echo "$TIMING" | sed 's/[\/&"]/\\&/g')
+                    KEY_ESC=$(echo "$KEY" | sed 's/[\/&"]/\\&/g')
+                    LINKS_ESC=$(echo "$LINKS" | sed 's/[\/&"]/\\&/g')
+                    
+                    sed -i 's/\("listen"\s*:\s*"\)[^"]*/\1'"$LISTEN_ESC"'/' "$JSON_CONF"
+                    sed -i 's/\("peer"\s*:\s*"\)[^"]*/\1'"$PEER_ESC"'/' "$JSON_CONF"
+                    sed -i 's/\("streams"\s*:\s*"\)[^"]*/\1'"$STREAMS_ESC"'/' "$JSON_CONF"
+                    sed -i 's/\("browser"\s*:\s*"\)[^"]*/\1'"$BROWSER_ESC"'/' "$JSON_CONF"
+                    sed -i 's/\("obf_profile"\s*:\s*"\)[^"]*/\1'"$PROFILE_ESC"'/' "$JSON_CONF"
+                    sed -i 's/\("obf_timing"\s*:\s*"\)[^"]*/\1'"$TIMING_ESC"'/' "$JSON_CONF"
+                    sed -i 's/\("obf_key"\s*:\s*"\)[^"]*/\1'"$KEY_ESC"'/' "$JSON_CONF"
+                    sed -i 's/\("links"\s*:\s*"\)[^"]*/\1'"$LINKS_ESC"'/' "$JSON_CONF"
+                    
+                    log "💾 Настройки VK TURN сохранены из cmd_query"
+                    
+		    # ===== ОБНОВЛЯЕМ ВЕБ-КЭШ С ИСПОЛЬЗОВАНИЕМ РАСПАРСЕННЫХ ЗНАЧЕНИЙ =====
+		    # Временно подставляем новые значения в переменные для save_web_status
+                    VK_LISTEN="$LISTEN"
+                    VK_PEER="$PEER"
+                    VK_STREAMS="$STREAMS"
+                    VK_BROWSER="$BROWSER"
+                    VK_PROFILE="$PROFILE"
+                    VK_TIMING="$TIMING"
+                    VK_KEY="$KEY"
+                    VK_LINKS="$LINKS"
+                    
+		    # Обновляем веб-кэш
+                    save_web_status
+                    log "💾 Настройки VK TURN сохранены и применены"
+                fi
+            fi
+            
+            # ===== 5. РЕТРАНСЛЯЦИЯ ЛОГА КЛИЕНТА =====
+            if is_vk_running && [ -f "/opt/etc/vk-turn/logs/vk-turn.log" ]; then
+                # Читаем новые строки из лога клиента
+                if [ -f "/tmp/vk_log_offset" ]; then
+                    OFFSET=$(cat /tmp/vk_log_offset 2>/dev/null)
+                else
+                    OFFSET=0
+                fi
+                
+                CURRENT_SIZE=$(wc -c < "/opt/etc/vk-turn/logs/vk-turn.log" 2>/dev/null)
+                if [ "$CURRENT_SIZE" -gt "$OFFSET" ]; then
+                    # Читаем новые строки
+                    NEW_LINES=$(dd if="/opt/etc/vk-turn/logs/vk-turn.log" bs=1 skip=$OFFSET 2>/dev/null)
+                    if [ -n "$NEW_LINES" ]; then
+                        echo "$NEW_LINES" | while IFS= read -r line; do
+                            [ -z "$line" ] && continue
+                            log "📱 VK: $line"
+                        done
+                    fi
+                    echo "$CURRENT_SIZE" > "/tmp/vk_log_offset"
+                fi
+            fi
+            
+            # ===== 6. МОНИТОРИНГ L2TP =====
+            COUNTER=$((COUNTER + 1))
+            if [ $COUNTER -ge $CHECK_INTERVAL ]; then
+                COUNTER=0
+                
+                if [ "$MONITOR_ENABLED" = "1" ]; then
+                    if check_l2tp; then
+                        if [ "$LAST_STATE" -ne 1 ]; then 
+                            log "🔄 L2TP ONLINE. Отключаем резерв."
+                            LAST_STATE=1
+                            VK_READY=0
+                            stop_wireguard
+                            stop_vk
+                            save_web_status
+                        fi
+                    else
+                        if [ "$LAST_STATE" -ne 0 ]; then 
+                            log "⚠️ L2TP OFFLINE. Включаем резерв."
+                            LAST_STATE=0
+                            VK_READY=0
+                            
+                            # ===== ЗАПУСКАЕМ VK =====
+                            if start_vk; then
+                                # ===== VK ГОТОВ — ЗАПУСКАЕМ WG =====
+                                VK_READY=1
+                                log "🔐 Запуск WireGuard..."
+                                start_wireguard
+                                save_web_status
+                            else
+                                log "❌ VK не готов, WG не запущен"
+	                            save_web_status
+								stop_vk
+								log "🔄 Перезапуск демона для повторной попытки..."
+								/opt/etc/init.d/S99vk-turn-panel restart
+								exit 0
+								# sleep 2
+								# log "🔄 Принудительный перезапуск VK..."
+								# start_vk
+                            fi
+                        fi
+                    fi
+                fi
+            fi
+            
+            sleep 1
+        done
+    } </dev/null >/dev/null 2>&1 &
     echo $! > "$PIDFILE"
+    log "✅ Процесс запущен (PID: $(cat $PIDFILE))"
     return 0
 }
 
 stop() {
+    log "🛑 Остановка процесса..."
     if [ -f "$PIDFILE" ]; then
         pid=$(cat "$PIDFILE" 2>/dev/null)
-        [ -n "$pid" ] && kill "$pid" 2>/dev/null
+        [ -n "$pid" ] && kill -9 "$pid" 2>/dev/null
         rm -f "$PIDFILE"
     fi
+    stop_vk
+    stop_wireguard
     rm -f "$WEB_STATUS_FILE"
+    rm -f "$MONITOR_STATE"
+    log "✅ Процесс остановлен"
     return 0
 }
 
-status() {
-    echo "========================================"
-    echo "    СТАТУС СЛУЖБЫ VK-TURN-PANEL"
-    echo "========================================"
-    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then 
-        echo "✅ МОНИТОР: ЗАПУЩЕН (PID: $(cat "$PIDFILE" 2>/dev/null))"
-    else 
-        echo "❌ МОНИТОР: НЕ ЗАПУЩЕН"
-    fi
-    
-    L2TP_CHECK=$(curl -s http://localhost:79/rci/show/interface/$L2TP_SYS_NAME | grep -A 5 '"summary":' | grep -o '"link": *"[^"]*"' | cut -d'"' -f4)
-    WG_CHECK=$(curl -s http://localhost:79/rci/show/interface/$WG_IFACE | grep -o '"state": *"[^"]*"' | cut -d'"' -f4)
-    
-    echo "📡 Туннель L2TP ($L2TP_SYS_NAME): $([ "$L2TP_CHECK" = "running" ] && echo "✅ ONLINE" || echo "❌ OFFLINE")"
-    echo "🔐 WireGuard ($WG_IFACE):  $([ "$WG_CHECK" = "up" ] && echo "✅ ПОДНЯТ" || echo "❌ ОТКЛЮЧЕН")"
-    echo "🔄 Сервис vk-turn:          $([ -f "/opt/etc/vk-turn/run/vk-turn.pid" ] && echo "✅ РАБОТАЕТ" || echo "❌ СПИТ")"
-    echo "========================================"
+restart() {
+    log "🔄 Рестарт..."
+    stop
+    sleep 2
+    start
 }
 
-# ДОБАВЛЕНО: Системный переключатель аргументов вызова
+status() {
+    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
+        echo "✅ ПРОЦЕСС: ЗАПУЩЕН (PID: $(cat "$PIDFILE" 2>/dev/null))"
+    else
+        echo "❌ ПРОЦЕСС: НЕ ЗАПУЩЕН"
+    fi
+    
+    if [ -f "/var/run/vk-turn-monitor.state" ]; then
+        STATE=$(cat "/var/run/vk-turn-monitor.state" 2>/dev/null)
+        if [ "$STATE" = "1" ]; then
+            echo "🔄 МОНИТОР: ЗАПУЩЕН"
+        else
+            echo "⏸️ МОНИТОР: ОСТАНОВЛЕН"
+        fi
+    else
+        echo "⏸️ МОНИТОР: ОСТАНОВЛЕН"
+    fi
+    
+    L2TP_CHECK=$(curl -s --max-time 5 http://localhost:79/rci/show/interface/$L2TP_SYS_NAME 2>/dev/null | grep -A 5 '"summary":' | grep -o '"link": *"[^"]*"' | head -n 1 | cut -d'"' -f4)
+    WG_CHECK=$(curl -s --max-time 5 http://localhost:79/rci/show/interface/$WG_IFACE 2>/dev/null | grep -o '"state": *"[^"]*"' | cut -d'"' -f4)
+    echo "📡 L2TP ($L2TP_SYS_NAME): $([ "$L2TP_CHECK" = "running" ] && echo "✅ ONLINE" || echo "❌ OFFLINE")"
+    echo "🔐 WireGuard ($WG_IFACE): $([ "$WG_CHECK" = "up" ] && echo "✅ ПОДНЯТ" || echo "❌ ОТКЛЮЧЕН")"
+    echo "🔄 vk-turn: $([ -f "/opt/etc/vk-turn/run/vk-turn.pid" ] && echo "✅ РАБОТАЕТ" || echo "❌ СПИТ")"
+}
+
+# ============================================================
+# 9. ТОЧКА ВХОДА
+# ============================================================
 case "$1" in
     start) start ;;
     stop) stop ;;
-    restart) stop; sleep 1; start ;;
+    restart) restart ;;
     status) status ;;
+    monitor_start) monitor_start ;;
+    monitor_stop) monitor_stop ;;
+    save_web_status) save_web_status ;;
+    vk_start) start_vk ;;
+    vk_stop) stop_vk ;;
+    *) echo "Usage: $0 {start|stop|restart|status|monitor_start|monitor_stop|save_web_status|vk_start|vk_stop}"; exit 1 ;;
 esac
